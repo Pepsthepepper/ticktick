@@ -288,3 +288,9 @@ __pycache__/
 *.odx.cs
 *.xsd.cs
 .DS_Store
+
+# Local test artifacts created by running the patcher
+TickTick.exe
+TickTick_Patched.exe
+TickTick_Patched.zip
+FakeTickTick/
