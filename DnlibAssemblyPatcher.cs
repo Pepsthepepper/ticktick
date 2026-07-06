@@ -1,4 +1,7 @@
-﻿using dnlib.DotNet;
+using System;
+using System.IO;
+using System.Linq;
+using dnlib.DotNet;
 using dnlib.DotNet.Emit;
 
 namespace TTPatcher
@@ -11,14 +14,27 @@ namespace TTPatcher
             try
             {
                 Console.WriteLine("Loading assembly with dnlib...");
-                
+
+                // Quick sanity check: make sure the file looks like a PE (starts with "MZ")
+                using (var fs = File.OpenRead(inputPath))
+                {
+                    int b1 = fs.ReadByte();
+                    int b2 = fs.ReadByte();
+                    if (b1 != 'M' || b2 != 'Z')
+                    {
+                        Console.WriteLine($"Invalid DOS signature: first bytes 0x{b1:X2} 0x{b2:X2}. The file is not a PE executable. Aborting patch.");
+                        Console.WriteLine($"File: {inputPath}, Size: {fs.Length} bytes, Extension: {Path.GetExtension(inputPath)}");
+                        return false;
+                    }
+                }
+
                 // Load the assembly
                 var module = ModuleDefMD.Load(inputPath);
                 Console.WriteLine($"Module loaded: {module.Name}");
 
                 // Find and patch the UserModel
                 var patchSuccess = PatchUserModel(module);
-                
+
                 if (!patchSuccess)
                 {
                     Console.WriteLine("Failed to patch UserModel properties.");
@@ -29,7 +45,7 @@ namespace TTPatcher
                 Console.WriteLine($"Saving patched assembly to: {outputPath}");
                 module.Write(outputPath);
                 Console.WriteLine("Assembly saved successfully!");
-                
+
                 return true;
             }
             catch (Exception ex)
@@ -43,7 +59,7 @@ namespace TTPatcher
         private bool PatchUserModel(ModuleDef module)
         {
             Console.WriteLine("Searching for UserModel type...");
-            
+
             // Find the UserModel type
             var userModelType = module.Types.FirstOrDefault(t => t.FullName == "ticktick_WPF.Models.UserModel");
             if (userModelType == null)
@@ -85,7 +101,7 @@ namespace TTPatcher
             {
                 var getter = proProperty.GetMethod;
                 getter.Body = new CilBody();
-                
+
                 // Create IL instructions: load true, return
                 getter.Body.Instructions.Add(OpCodes.Ldc_I4_1.ToInstruction()); // Load 1 (true)
                 getter.Body.Instructions.Add(OpCodes.Ret.ToInstruction());       // Return
@@ -160,12 +176,12 @@ namespace TTPatcher
         {
             Console.WriteLine($"Total types in module: {module.Types.Count}");
             Console.WriteLine("Sample types (first 10):");
-            
+
             foreach (var type in module.Types.Take(10))
             {
                 Console.WriteLine($"  - {type.FullName}");
             }
-            
+
             if (module.Types.Count > 10)
             {
                 Console.WriteLine($"  ... and {module.Types.Count - 10} more types");
