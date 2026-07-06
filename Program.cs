@@ -15,7 +15,7 @@ namespace TTPatcher
             if (inputPath == null)
             {
                 // Ensure non-zero exit code when no input file was provided/found
-                Environment.ExitCode = 1;
+                Environment.Exit(1);
                 return;
             }
 
@@ -30,13 +30,13 @@ namespace TTPatcher
             {
                 Console.WriteLine($"✅ Patching completed successfully!");
                 Console.WriteLine($"📁 Patched file: {outputPath}");
-                Environment.ExitCode = 0;
+                Environment.Exit(0);
             }
             else
             {
                 Console.WriteLine("❌ Patching failed!");
-                // Important: set a non-zero exit code so CI fails the step and stops further steps
-                Environment.ExitCode = 1;
+                // Force non-zero exit so CI fails immediately
+                Environment.Exit(1);
             }
         }
 
