@@ -34,6 +34,31 @@ jobs:
           Write-Host "Downloading target file from ${{ inputs.app_url }}..."
           Invoke-WebRequest -Uri "${{ inputs.app_url }}" -OutFile "TickTick.exe"
 
+      - name: Verify downloaded file is a PE executable
+        shell: pwsh
+        run: |
+          $file = Get-Item -Path "TickTick.exe"
+          Write-Host "Downloaded file size: $($file.Length) bytes"
+          $fs = [System.IO.File]::OpenRead("TickTick.exe")
+          try {
+            $b1 = $fs.ReadByte()
+            $b2 = $fs.ReadByte()
+            if ($b1 -ne 0x4D -or $b2 -ne 0x5A) {
+              Write-Error "Downloaded file does not have 'MZ' header (not a PE). First bytes: 0x{0:X2} 0x{1:X2}" -f $b1, $b2
+              Write-Host "---- first 512 bytes (as utf8) ----"
+              $raw = Get-Content -Raw -Path "TickTick.exe" -Encoding UTF8 -ErrorAction SilentlyContinue
+              if ($raw) {
+                Write-Host $raw.Substring(0, [Math]::Min(512, $raw.Length))
+              }
+              exit 1
+            }
+            else {
+              Write-Host "TickTick.exe appears to be a PE executable (MZ header OK)."
+            }
+          } finally {
+            $fs.Dispose()
+          }
+
       - name: Run Patcher
         # We can just build and run directly via dotnet run
         run: dotnet run -- "TickTick.exe"
