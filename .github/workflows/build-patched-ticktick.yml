@@ -63,6 +63,21 @@ jobs:
         # We can just build and run directly via dotnet run
         run: dotnet run -- "TickTick.exe"
 
+      - name: Diagnostic - list files after patcher
+        shell: pwsh
+        run: |
+          Write-Host "Working directory: $(Get-Location)"
+          Write-Host "Files in repo root:"
+          Get-ChildItem -Force | Sort-Object Length -Descending | Format-Table Name,Length -AutoSize
+          if (Test-Path "TickTick_Patched.exe") {
+            Write-Host "TickTick_Patched.exe exists:"
+            Get-Item "TickTick_Patched.exe" | Format-List Name,Length,FullName
+            Get-FileHash -Path "TickTick_Patched.exe" -Algorithm SHA256
+          } else {
+            Write-Host "TickTick_Patched.exe not found. Looking for any *_Patched.* files..."
+            Get-ChildItem -Filter "*_Patched.*" -Recurse | Format-Table FullName,Length -AutoSize
+          }
+
       - name: Prepare Release Package
         shell: pwsh
         run: |
