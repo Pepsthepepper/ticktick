@@ -44,7 +44,10 @@ jobs:
             $b1 = $fs.ReadByte()
             $b2 = $fs.ReadByte()
             if ($b1 -ne 0x4D -or $b2 -ne 0x5A) {
-              Write-Error ( "Downloaded file does not have 'MZ' header (not a PE). First bytes: 0x{0:X2} 0x{1:X2}" -f $b1, $b2 )
+              # Format the bytes into hex strings first to avoid parser issues with -f inline
+              $h1 = "{0:X2}" -f $b1
+              $h2 = "{0:X2}" -f $b2
+              Write-Error "Downloaded file does not have 'MZ' header (not a PE). First bytes: 0x$h1 0x$h2"
               Write-Host "---- first 512 bytes (as utf8) ----"
               $raw = Get-Content -Raw -Path "TickTick.exe" -Encoding UTF8 -ErrorAction SilentlyContinue
               if ($raw) {
