@@ -1,4 +1,7 @@
-﻿namespace TTPatcher
+using System;
+using System.IO;
+
+namespace TTPatcher
 {
     class Program
     {
@@ -6,33 +9,41 @@
         {
             Console.WriteLine("TTPatcher - TickTick License Patcher");
             Console.WriteLine("=====================================");
-            
+
             // Parse command line arguments
             var inputPath = GetInputPath(args);
-            if (inputPath == null) return;
+            if (inputPath == null)
+            {
+                // Ensure non-zero exit code when no input file was provided/found
+                Environment.ExitCode = 1;
+                return;
+            }
 
             // Generate output path
             var outputPath = GenerateOutputPath(inputPath);
-            
+
             // Create patcher and run
             var patcher = new DnlibAssemblyPatcher();
             var success = patcher.PatchAssembly(inputPath, outputPath);
-            
+
             if (success)
             {
                 Console.WriteLine($"✅ Patching completed successfully!");
                 Console.WriteLine($"📁 Patched file: {outputPath}");
+                Environment.ExitCode = 0;
             }
             else
             {
                 Console.WriteLine("❌ Patching failed!");
+                // Important: set a non-zero exit code so CI fails the step and stops further steps
+                Environment.ExitCode = 1;
             }
         }
 
         private static string? GetInputPath(string[] args)
         {
             string inputPath;
-            
+
             // Check if path was provided as command line argument
             if (args.Length > 0)
             {
@@ -45,7 +56,7 @@
                 inputPath = Path.Combine(Directory.GetCurrentDirectory(), "TickTick.exe");
                 Console.WriteLine($"Looking for TickTick.exe in current directory: {inputPath}");
             }
-            
+
             if (!File.Exists(inputPath))
             {
                 if (args.Length > 0)
@@ -62,7 +73,7 @@
                 }
                 return null;
             }
-            
+
             Console.WriteLine($"✅ Found TickTick.exe at: {inputPath}");
             return inputPath;
         }
@@ -72,7 +83,7 @@
             var directory = Path.GetDirectoryName(inputPath) ?? "";
             var fileName = Path.GetFileNameWithoutExtension(inputPath);
             var extension = Path.GetExtension(inputPath);
-            
+
             return Path.Combine(directory, $"{fileName}_Patched{extension}");
         }
     }
