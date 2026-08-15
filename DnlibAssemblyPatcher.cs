@@ -1,6 +1,8 @@
 using System;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
+using System.Diagnostics;
 using dnlib.DotNet;
 using dnlib.DotNet.Emit;
 
@@ -28,25 +30,44 @@ namespace TTPatcher
                     }
                 }
 
-                // Load the assembly
-                var module = ModuleDefMD.Load(inputPath);
-                Console.WriteLine($"Module loaded: {module.Name}");
-
-                // Find and patch the UserModel
-                var patchSuccess = PatchUserModel(module);
-
-                if (!patchSuccess)
+                // Try to load the assembly directly (most common case)
+                try
                 {
-                    Console.WriteLine("Failed to patch UserModel properties.");
-                    return false;
+                    var module = ModuleDefMD.Load(inputPath);
+                    Console.WriteLine($"Module loaded: {module.Name}");
+
+                    // Find and patch the UserModel
+                    var patchSuccess = PatchUserModel(module);
+
+                    if (!patchSuccess)
+                    {
+                        Console.WriteLine("Failed to patch UserModel properties.");
+                        return false;
+                    }
+
+                    // Save the patched assembly
+                    Console.WriteLine($"Saving patched assembly to: {outputPath}");
+                    module.Write(outputPath);
+                    Console.WriteLine("Assembly saved successfully!");
+
+                    return true;
                 }
+                catch (Exception loadEx)
+                {
+                    Console.WriteLine($"Direct load failed: {loadEx.Message}");
+                    Console.WriteLine("Attempting to locate managed assemblies inside the input (ZIP/SFX/MSI) and patch them...");
 
-                // Save the patched assembly
-                Console.WriteLine($"Saving patched assembly to: {outputPath}");
-                module.Write(outputPath);
-                Console.WriteLine("Assembly saved successfully!");
+                    // Try to extract and patch from common installer/archive formats (ZIP/SFX)
+                    var patchedFromArchive = TryPatchFromArchive(inputPath, outputPath);
+                    if (patchedFromArchive)
+                    {
+                        Console.WriteLine("Patched assembly extracted from installer and saved.");
+                        return true;
+                    }
 
-                return true;
+                    // Fall through to outer catch for full error reporting
+                    throw;
+                }
             }
             catch (Exception ex)
             {
@@ -185,6 +206,205 @@ namespace TTPatcher
             if (module.Types.Count > 10)
             {
                 Console.WriteLine($"  ... and {module.Types.Count - 10} more types");
+            }
+        }
+
+        private bool TryPatchFromArchive(string inputPath, string outputPath)
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "TTPatcher_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                // Attempt to treat the input as a ZIP or self-extracting ZIP (SFX)
+                try
+                {
+                    using (var fs = File.OpenRead(inputPath))
+                    using (var za = new ZipArchive(fs, ZipArchiveMode.Read, true))
+                    {
+                        Console.WriteLine($"Archive detected with {za.Entries.Count} entries.");
+                        foreach (var entry in za.Entries)
+                        {
+                            if (string.IsNullOrEmpty(entry.Name))
+                                continue; // skip directories
+
+                            if (!entry.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && !entry.Name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                                continue;
+
+                            var tempFile = Path.Combine(tempDir, entry.Name);
+                            Console.WriteLine($"Extracting candidate: {entry.FullName}");
+                            entry.ExtractToFile(tempFile);
+
+                            try
+                            {
+                                var module = ModuleDefMD.Load(tempFile);
+                                Console.WriteLine($"Loaded candidate assembly: {entry.FullName}");
+                                var patched = PatchUserModel(module);
+                                if (patched)
+                                {
+                                    module.Write(outputPath);
+                                    return true;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Skipping {entry.FullName}: {ex.Message}");
+                                continue;
+                            }
+                        }
+                    }
+                }
+                catch (InvalidDataException)
+                {
+                    Console.WriteLine("Input is not a ZIP/SFX archive.");
+                }
+
+                // Heuristic: scan the file for an embedded ZIP local file header (PK\x03\x04) and try from there (handles some SFX formats)
+                try
+                {
+                    var all = File.ReadAllBytes(inputPath);
+                    int sig = -1;
+                    byte[] pattern = new byte[] { 0x50, 0x4B, 0x03, 0x04 };
+                    for (int i = 0; i < all.Length - pattern.Length; i++)
+                    {
+                        bool match = true;
+                        for (int j = 0; j < pattern.Length; j++) { if (all[i + j] != pattern[j]) { match = false; break; } }
+                        if (match) { sig = i; break; }
+                    }
+
+                    if (sig >= 0)
+                    {
+                        Console.WriteLine($"Found embedded ZIP signature at offset {sig}. Trying to open archive from there...");
+                        using (var ms = new MemoryStream(all, sig, all.Length - sig))
+                        using (var za = new ZipArchive(ms, ZipArchiveMode.Read))
+                        {
+                            Console.WriteLine($"Embedded archive detected with {za.Entries.Count} entries.");
+                            foreach (var entry in za.Entries)
+                            {
+                                if (string.IsNullOrEmpty(entry.Name)) continue;
+                                if (!entry.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && !entry.Name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)) continue;
+                                var tempFile = Path.Combine(tempDir, entry.Name);
+                                Console.WriteLine($"Extracting embedded candidate: {entry.FullName}");
+                                entry.ExtractToFile(tempFile);
+                                try
+                                {
+                                    var module = ModuleDefMD.Load(tempFile);
+                                    Console.WriteLine($"Loaded candidate assembly: {entry.FullName}");
+                                    var patched = PatchUserModel(module);
+                                    if (patched)
+                                    {
+                                        module.Write(outputPath);
+                                        return true;
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"Skipping embedded {entry.FullName}: {ex.Message}");
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Embedded ZIP scan failed: {ex.Message}");
+                }
+
+                // Try extracting with 7z if available (handles many installer types: NSIS, Inno, SFX)
+                try
+                {
+                    var psi = new ProcessStartInfo("7z", $"x -y -o\"{tempDir}\" \"{inputPath}\"")
+                    {
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+                    using (var proc = Process.Start(psi))
+                    {
+                        if (proc != null)
+                        {
+                            proc.WaitForExit(120000); // wait up to 2 minutes
+                            Console.WriteLine($"7z exit code: {proc.ExitCode}");
+                            if (proc.ExitCode == 0 || proc.ExitCode == 1)
+                            {
+                                // Scan extracted files for candidates
+                                foreach (var file in Directory.EnumerateFiles(tempDir, "*.*", SearchOption.AllDirectories))
+                                {
+                                    try
+                                    {
+                                        // If the file looks like a managed assembly, try to load directly.
+                                        if (file.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            try
+                                            {
+                                                var module = ModuleDefMD.Load(file);
+                                                Console.WriteLine($"Loaded candidate from 7z extraction: {file}");
+                                                var patched = PatchUserModel(module);
+                                                if (patched)
+                                                {
+                                                    module.Write(outputPath);
+                                                    return true;
+                                                }
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Console.WriteLine($"Skipping extracted {file}: {ex.Message}");
+                                            }
+                                        }
+
+                                        // Also scan large extracted blobs for embedded PE images (MZ header)
+                                        var fi = new FileInfo(file);
+                                        if (fi.Length > 1024)
+                                        {
+                                            var bytes = File.ReadAllBytes(file);
+                                            for (int i = 0; i < bytes.Length - 1; i++)
+                                            {
+                                                if (bytes[i] == 0x4D && bytes[i + 1] == 0x5A) // 'MZ'
+                                                {
+                                                    try
+                                                    {
+                                                        using (var ms = new MemoryStream(bytes, i, bytes.Length - i))
+                                                        {
+                                                            var module = ModuleDefMD.Load(ms);
+                                                            Console.WriteLine($"Loaded embedded PE candidate from {file} at offset {i}");
+                                                            var patched = PatchUserModel(module);
+                                                            if (patched)
+                                                            {
+                                                                module.Write(outputPath);
+                                                                return true;
+                                                            }
+                                                        }
+                                                    }
+                                                    catch (Exception ex)
+                                                    {
+                                                        // Not a valid managed PE at this offset; continue searching
+                                                        // Avoid loud logs for each failure on big files
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Console.WriteLine($"Unexpected error scanning {file}: {ex.Message}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"7z extraction attempt failed: {ex.Message}");
+                }
+
+                // No managed assembly found in installer
+                return false;
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
             }
         }
     }
